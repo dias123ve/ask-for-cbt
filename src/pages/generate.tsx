@@ -1,230 +1,203 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
+import { Loader2, Play, Pause, Download } from 'lucide-react'
 
-type GeneratedFile = {
+type GenerationStatus = {
   id: string
-  type: 'prota' | 'prosem' | 'modul' | 'lkpd'
-  bab_label: string | null
-  status: 'pending' | 'generating' | 'success' | 'error'
-  file_url: string | null
-  error_msg: string | null
-  order_index: number
+  master_id: string
+  jenis: 'prota' | 'prosem' | 'rpm' | 'lkpd'
+  bab_id: string | null
+  status: string
+  current_step: number | null
+  total_steps: number | null
+  file_path: string | null
+  babs?: {
+    nomor: number
+    judul: string
+  } | null
 }
 
-export default function GeneratePage() {
-  const { master_id } = useParams()
-  const navigate = useNavigate()
+export default function GenerateAdministrasi() {
+  const [masterId, setMasterId] = useState<string | null>(null)
+  const [rows, setRows] = useState<GenerationStatus[]>([])
+  const [loading, setLoading] = useState(false)
 
-  const [files, setFiles] = useState<GeneratedFile[]>([])
-  const [loading, setLoading] = useState(true)
+  /* -------------------------------------------------- */
+  /* INIT */
+  /* -------------------------------------------------- */
 
-  // BAB generation state
-  const [babGenerated, setBabGenerated] = useState(false)
-  const [generatingBab, setGeneratingBab] = useState(false)
-
-  const [runningAll, setRunningAll] = useState(false)
-
-  // ===============================
-  // INIT
-  // ===============================
   useEffect(() => {
-    const init = async () => {
-      const { data: session } = await supabase.auth.getSession()
-      if (!session.session) {
-        navigate('/login', { replace: true })
-        return
-      }
+    // ambil master aktif (contoh: dari localStorage / route state)
+    const stored = localStorage.getItem('active_master_id')
+    if (stored) setMasterId(stored)
+  }, [])
 
-      await Promise.all([
-        fetchFiles(),
-        checkBabGenerated(),
-      ])
+  useEffect(() => {
+    if (!masterId) return
+    fetchStatuses()
+  }, [masterId])
 
-      setLoading(false)
-    }
+  async function fetchStatuses() {
+    const { data, error } = await supabase
+      .from('generation_status')
+      .select(`
+        *,
+        babs (
+          nomor,
+          judul
+        )
+      `)
+      .eq('master_id', masterId)
+      .order('jenis', { ascending: true })
 
-    init()
-  }, [master_id, navigate])
-
-  // ===============================
-  // FETCHERS
-  // ===============================
-  const fetchFiles = async () => {
-    const { data } = await supabase
-      .from('generated_files')
-      .select('*')
-      .eq('master_id', master_id)
-      .order('order_index')
-
-    if (data) setFiles(data)
+    if (!error && data) setRows(data)
   }
 
-  const checkBabGenerated = async () => {
-    const { count } = await supabase
+  /* -------------------------------------------------- */
+  /* GENERATE SEMUA (FASE 1) */
+  /* -------------------------------------------------- */
+
+  async function handleGenerateAll() {
+    if (!masterId) return
+    setLoading(true)
+
+    // ambil bab
+    const { data: babs } = await supabase
       .from('babs')
-      .select('*', { count: 'exact', head: true })
-      .eq('master_id', master_id)
+      .select('id')
+      .eq('master_id', masterId)
 
-    setBabGenerated((count ?? 0) > 0)
-  }
+    const inserts: any[] = []
 
-  // ===============================
-  // ACTIONS
-  // ===============================
-  const generateBabOnce = async () => {
-    if (babGenerated || generatingBab) return
-
-    setGeneratingBab(true)
-
-    const { error } = await supabase.rpc(
-      'generate_babs_and_files',
-      { p_master_id: master_id }
+    // prota & prosem
+    inserts.push(
+      {
+        master_id: masterId,
+        jenis: 'prota',
+        status: 'pending',
+        current_step: 0
+      },
+      {
+        master_id: masterId,
+        jenis: 'prosem',
+        status: 'pending',
+        current_step: 0
+      }
     )
 
-    setGeneratingBab(false)
+    // rpm & lkpd per bab
+    babs?.forEach((bab) => {
+      inserts.push(
+        {
+          master_id: masterId,
+          bab_id: bab.id,
+          jenis: 'rpm',
+          status: 'pending',
+          current_step: 0
+        },
+        {
+          master_id: masterId,
+          bab_id: bab.id,
+          jenis: 'lkpd',
+          status: 'pending',
+          current_step: 0
+        }
+      )
+    })
 
-    if (error) {
-      alert('Gagal menyiapkan ruangan generate')
-      console.error(error)
-      return
+    // insert (idempotent: conflict di-handle di DB)
+    await supabase
+      .from('generation_status')
+      .upsert(inserts, {
+        onConflict: 'master_id,jenis,bab_id'
+      })
+
+    // trigger orchestrator (1 kali)
+    await supabase.functions.invoke('run_generation_orchestrator', {
+      body: { master_id: masterId }
+    })
+
+    await fetchStatuses()
+    setLoading(false)
+  }
+
+  /* -------------------------------------------------- */
+  /* HELPERS */
+  /* -------------------------------------------------- */
+
+  function renderProgress(row: GenerationStatus) {
+    if (!row.total_steps) return '–'
+    return `${row.current_step ?? 0} / ${row.total_steps}`
+  }
+
+  function renderBab(row: GenerationStatus) {
+    if (!row.babs) return '–'
+    return `Bab ${row.babs.nomor}`
+  }
+
+  function renderAction(row: GenerationStatus) {
+    if (row.status === 'done' && row.file_path) {
+      return (
+        <a href={row.file_path} target="_blank">
+          <Download className="w-4 h-4" />
+        </a>
+      )
     }
 
-    setBabGenerated(true)
-    alert('ruangan generate siap')
+    if (row.status === 'generating' || row.status === 'generating_ai') {
+      return <Pause className="w-4 h-4 text-gray-400" />
+    }
+
+    return <Play className="w-4 h-4 text-gray-600" />
   }
 
-  const generateOne = async (file: GeneratedFile) => {
-    const endpoint = `/functions/v1/generate_${file.type}`
-
-    await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ generated_file_id: file.id }),
-    })
-
-    await fetchFiles()
-  }
-
-  const generateAll = async () => {
-    setRunningAll(true)
-
-    await fetch('/functions/v1/generate_all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ master_id }),
-    })
-
-    setRunningAll(false)
-    await fetchFiles()
-  }
-
-  const doneCount = files.filter(f => f.status === 'success').length
-
-  // ===============================
-  // RENDER
-  // ===============================
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        Memuat...
-      </div>
-    )
-  }
+  /* -------------------------------------------------- */
+  /* UI */
+  /* -------------------------------------------------- */
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 space-y-6">
-      {/* HEADER */}
+    <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-xl font-semibold">
-            Generate Administrasi
-          </h1>
-          <p className="text-sm text-slate-500">
-            {doneCount} / {files.length} file selesai
-          </p>
-        </div>
+        <h1 className="text-xl font-semibold">Generate Administrasi</h1>
 
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={generateBabOnce}
-            disabled={babGenerated || generatingBab}
-          >
-            {babGenerated
-              ? 'Ruangan Generate Siap'
-              : generatingBab
-                ? 'Mengenerate BAB...'
-                : 'Siapkan ruangan generate'}
-          </Button>
-
-          <Button
-            onClick={generateAll}
-            disabled={runningAll || !babGenerated}
-          >
-            {runningAll ? 'Menjalankan...' : 'Generate Semua'}
-          </Button>
-        </div>
+        <Button onClick={handleGenerateAll} disabled={loading}>
+          {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+          Generate Semua
+        </Button>
       </div>
 
-      {/* FILE LIST */}
-      <div className="bg-white rounded-xl shadow overflow-hidden">
+      <div className="border rounded-lg overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-100">
+          <thead className="bg-gray-100">
             <tr>
-              <th className="px-4 py-3 text-left">File</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-center">Aksi</th>
+              <th className="p-3 text-left">Dokumen</th>
+              <th className="p-3 text-left">Bab</th>
+              <th className="p-3 text-left">Progress</th>
+              <th className="p-3 text-left">Status</th>
+              <th className="p-3 text-center">Aksi</th>
             </tr>
           </thead>
-
           <tbody>
-            {files.map(file => (
-              <tr key={file.id} className="border-t">
-                <td className="px-4 py-3">
-                  {file.type.toUpperCase()}
-                  {file.bab_label && ` – ${file.bab_label}`}
-                </td>
-
-                <td className="px-4 py-3">
-                  {file.status === 'pending' && 'Belum dibuat'}
-                  {file.status === 'generating' && 'Sedang dibuat...'}
-                  {file.status === 'success' && 'Selesai'}
-                  {file.status === 'error' && (
-                    <span className="text-red-600">
-                      Error
-                    </span>
-                  )}
-                </td>
-
-                <td className="px-4 py-3 text-center space-x-2">
-                  {file.status !== 'success' && (
-                    <Button
-                      size="sm"
-                      onClick={() => generateOne(file)}
-                      disabled={
-                        file.status === 'generating' ||
-                        !babGenerated
-                      }
-                    >
-                      Generate
-                    </Button>
-                  )}
-
-                  {file.status === 'success' && file.file_url && (
-                    <a
-                      href={file.file_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 text-sm underline"
-                    >
-                      Download
-                    </a>
-                  )}
+            {rows.map((row) => (
+              <tr key={row.id} className="border-t">
+                <td className="p-3 uppercase">{row.jenis}</td>
+                <td className="p-3">{renderBab(row)}</td>
+                <td className="p-3">{renderProgress(row)}</td>
+                <td className="p-3">{row.status}</td>
+                <td className="p-3 text-center">
+                  {renderAction(row)}
                 </td>
               </tr>
             ))}
+
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={5} className="p-6 text-center text-gray-500">
+                  Belum ada data generate
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
