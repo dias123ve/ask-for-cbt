@@ -59,40 +59,46 @@ export default function DashboardPage() {
   /* =========================
      SYNC BAB (MANUAL)
      ========================= */
-  const handleSyncBab = async (masterId: string) => {
-    setSyncLoadingId(masterId)
+ const handleSyncBab = async (masterId: string) => {
+  setSyncLoadingId(masterId)
 
-    try {
-      // 1. Init generation (siapkan generation_status)
-      await supabase.rpc('init_generation_for_master', {
-        p_master_id: masterId,
-      })
+  try {
+    // 1️⃣ Init generation (struktur awal)
+    await supabase.rpc('init_generation_for_master', {
+      p_master_id: masterId,
+    })
 
-      // 2. Ambil semua bab
-      const { data: babs, error } = await supabase
-        .from('babs')
-        .select('id')
-        .eq('master_id', masterId)
-        .order('nomor')
+    // 2️⃣ Ambil semua BAB
+    const { data: babs, error } = await supabase
+      .from('babs')
+      .select('id')
+      .eq('master_id', masterId)
+      .order('nomor')
 
-      if (error || !babs) {
-        throw new Error('Gagal mengambil data bab')
-      }
-
-      // 3. Panggil edge untuk setiap bab (serial, aman)
-      for (const bab of babs) {
-        await callEdge({
-          functionName: 'generate_bab_ai_structure',
-          body: { bab_id: bab.id },
-        })
-      }
-    } catch (err) {
-      console.error('Sync bab error:', err)
-      alert('Gagal sinkronisasi bab')
-    } finally {
-      setSyncLoadingId(null)
+    if (error || !babs) {
+      throw new Error('Gagal mengambil data bab')
     }
+
+    // 3️⃣ Generate struktur BAB (AI) — serial & aman
+    for (const bab of babs) {
+      await callEdge({
+        functionName: 'generate_bab_ai_structure',
+        body: { bab_id: bab.id },
+      })
+    }
+
+    // 4️⃣ 🔥 SYNC PROGRESS LKPD (RPC BARU)
+    await supabase.rpc('sync_lkpd_generation_progress', {
+      p_master_id: masterId,
+    })
+
+  } catch (err) {
+    console.error('Sync bab error:', err)
+    alert('Gagal sinkronisasi bab')
+  } finally {
+    setSyncLoadingId(null)
   }
+}
 
   /* =========================
      RENDER
