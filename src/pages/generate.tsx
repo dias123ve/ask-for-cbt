@@ -79,20 +79,20 @@ export default function GeneratePage() {
     setGeneratingBab(true)
 
     const { error } = await supabase.rpc(
-      'generate_babs_from_master',
+      'generate_babs_and_files',
       { p_master_id: master_id }
     )
 
     setGeneratingBab(false)
 
     if (error) {
-      alert('Gagal generate BAB')
+      alert('Gagal menyiapkan ruangan generate')
       console.error(error)
       return
     }
 
     setBabGenerated(true)
-    alert('BAB berhasil digenerate')
+    alert('ruangan generate siap')
   }
 
   const generateOne = async (file: GeneratedFile) => {
@@ -153,10 +153,10 @@ export default function GeneratePage() {
             disabled={babGenerated || generatingBab}
           >
             {babGenerated
-              ? 'BAB Sudah Digenerate'
+              ? 'Ruangan Generate Siap'
               : generatingBab
                 ? 'Mengenerate BAB...'
-                : 'Generate BAB'}
+                : 'Siapkan ruangan generate'}
           </Button>
 
           <Button
