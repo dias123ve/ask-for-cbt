@@ -40,23 +40,25 @@ export default function GeneratePage() {
     if (!masterId) return
 
     const { data, error } = await supabase
-      .from('generation_status')
-      .select(`
-        id,
-        master_id,
-        jenis,
-        bab_id,
-        status,
-        current_step,
-        total_steps,
-        file_path,
-        babs (
-          nomor,
-          judul
-        )
-      `)
-      .eq('master_id', masterId)
-      .order('jenis', { ascending: true })
+  .from('generation_status')
+  .select(`
+    id,
+    master_id,
+    jenis,
+    bab_id,
+    status,
+    current_step,
+    total_steps,
+    file_path,
+    babs:babs!generation_status_bab_id_fkey (
+      nomor,
+      judul
+    )
+  `)
+  .eq('master_id', masterId)
+  .order('jenis', { ascending: true })
+
+console.log('FETCH RESULT:', data, error)
 
     if (!error && data) {
       setRows(data)
