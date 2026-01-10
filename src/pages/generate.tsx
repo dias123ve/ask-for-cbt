@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Loader2, Play, Pause, Download } from 'lucide-react'
@@ -20,19 +21,15 @@ type GenerationStatus = {
 }
 
 export default function GeneratePage() {
-  const [masterId, setMasterId] = useState<string | null>(null)
+  // ✅ SINGLE SOURCE OF TRUTH
+  const { masterId } = useParams<{ masterId: string }>()
+
   const [rows, setRows] = useState<GenerationStatus[]>([])
   const [loading, setLoading] = useState(false)
 
   /* -------------------------------------------------- */
-  /* INIT */
+  /* FETCH STATUS */
   /* -------------------------------------------------- */
-
-  useEffect(() => {
-    // master aktif diset dari dashboard / route
-    const stored = localStorage.getItem('active_master_id')
-    if (stored) setMasterId(stored)
-  }, [])
 
   useEffect(() => {
     if (!masterId) return
@@ -74,26 +71,26 @@ export default function GeneratePage() {
     if (!masterId) return
     setLoading(true)
 
-    // 1️⃣ pastikan struktur data (BAB + generation_status) ada
+    // 1️⃣ init data (BAB + generation_status)
     const { error } = await supabase.rpc(
       'init_generation_for_master',
       { p_master_id: masterId }
     )
 
     if (error) {
-      console.error('Init generation error:', error)
-      alert('Gagal inisialisasi data generate')
+      console.error(error)
+      alert('Gagal inisialisasi data')
       setLoading(false)
       return
     }
 
-    // 2️⃣ trigger orchestrator (1 langkah saja)
+    // 2️⃣ trigger orchestrator (1 langkah)
     await callEdge({
       functionName: 'run_generation_orchestrator',
       body: { master_id: masterId },
     })
 
-    // 3️⃣ refresh UI
+    // 3️⃣ refresh
     await fetchStatuses()
     setLoading(false)
   }
