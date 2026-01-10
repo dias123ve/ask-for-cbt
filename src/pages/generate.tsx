@@ -38,45 +38,53 @@ export default function GeneratePage() {
   }, [masterId])
 
   async function fetchStatuses() {
-    if (!masterId) return
+  if (!masterId) return
 
-    const { data, error } = await supabase
-      .from('generation_status')
-      .select(`
-        id,
-        master_id,
-        jenis,
-        bab_id,
-        status,
-        current_step,
-        total_steps,
-        file_path,
-        babs:babs!generation_status_bab_id_fkey (
-          nomor
-        )
-      `)
-      .eq('master_id', masterId)
-      .order(
-    `
-    case jenis
-      when 'prota' then 1
-      when 'prosem' then 2
-      when 'rpm' then 3
-      when 'lkpd' then 4
-    end
-    `,
-    { ascending: true }
-  )
-  .order('babs.nomor', { ascending: true, nullsFirst: true })
-    
-    if (error) {
-      console.error('❌ fetchStatuses error:', error)
-      setRows([])
-      return
-    }
+  const { data, error } = await supabase
+    .from('generation_status')
+    .select(`
+      id,
+      master_id,
+      jenis,
+      bab_id,
+      status,
+      current_step,
+      total_steps,
+      file_path,
+      babs:babs!generation_status_bab_id_fkey (
+        nomor
+      )
+    `)
+    .eq('master_id', masterId)
+    .order('bab_id', { ascending: true, nullsFirst: true })
 
-    setRows(data ?? [])
+  if (error) {
+    console.error('❌ fetchStatuses error:', error)
+    setRows([])
+    return
   }
+
+  // ✅ SORT DI FRONTEND (AMAN)
+  const orderJenis = {
+    prota: 1,
+    prosem: 2,
+    rpm: 3,
+    lkpd: 4,
+  }
+
+  const sorted = (data ?? []).sort((a, b) => {
+    const jenisDiff =
+      orderJenis[a.jenis] - orderJenis[b.jenis]
+    if (jenisDiff !== 0) return jenisDiff
+
+    const babA = a.babs?.nomor ?? 0
+    const babB = b.babs?.nomor ?? 0
+    return babA - babB
+  })
+
+  setRows(sorted)
+}
+
 
   /* ================================================== */
   /* GENERATE (TRIGGER ORCHESTRATOR)                    */
