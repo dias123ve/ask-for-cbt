@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
 import { RefreshCcw, Play } from 'lucide-react'
+import { callEdge } from '@/lib/callEdge'
 
 type MasterRow = {
   id: string
@@ -17,12 +18,15 @@ export default function DashboardPage() {
 
   const [masters, setMasters] = useState<MasterRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [initLoadingId, setInitLoadingId] = useState<string | null>(null)
+  const [syncLoadingId, setSyncLoadingId] = useState<string | null>(null)
 
-  // Auth guard + fetch data
+  /* =========================
+     INIT + AUTH GUARD
+     ========================= */
   useEffect(() => {
     const init = async () => {
       const { data: sessionData } = await supabase.auth.getSession()
+
       if (!sessionData.session) {
         navigate('/login', { replace: true })
         return
@@ -43,27 +47,55 @@ export default function DashboardPage() {
     init()
   }, [navigate])
 
+  /* =========================
+     LOGOUT
+     ========================= */
   const handleLogout = async () => {
     await supabase.auth.signOut()
     navigate('/login', { replace: true })
   }
 
-  const handleInitGeneration = async (masterId: string) => {
-    setInitLoadingId(masterId)
+  /* =========================
+     SYNC BAB (MANUAL)
+     ========================= */
+  const handleSyncBab = async (masterId: string) => {
+    setSyncLoadingId(masterId)
 
-    const { error } = await supabase.rpc(
-      'init_generation_for_master',
-      { p_master_id: masterId }
-    )
+    try {
+      // 1. Init generation (siapkan generation_status)
+      await supabase.rpc('init_generation_for_master', {
+        p_master_id: masterId,
+      })
 
-    if (error) {
-      console.error('Init generation error:', error)
-      alert('Gagal inisialisasi administrasi')
+      // 2. Ambil semua bab
+      const { data: babs, error } = await supabase
+        .from('babs')
+        .select('id')
+        .eq('master_id', masterId)
+        .order('nomor')
+
+      if (error || !babs) {
+        throw new Error('Gagal mengambil data bab')
+      }
+
+      // 3. Panggil edge untuk setiap bab (serial, aman)
+      for (const bab of babs) {
+        await callEdge({
+          functionName: 'generate_bab_ai_structure',
+          body: { bab_id: bab.id },
+        })
+      }
+    } catch (err) {
+      console.error('Sync bab error:', err)
+      alert('Gagal sinkronisasi bab')
+    } finally {
+      setSyncLoadingId(null)
     }
-
-    setInitLoadingId(null)
   }
 
+  /* =========================
+     RENDER
+     ========================= */
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -99,7 +131,10 @@ export default function DashboardPage() {
           <tbody>
             {masters.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
+                <td
+                  colSpan={5}
+                  className="px-4 py-6 text-center text-slate-500"
+                >
                   Belum ada data
                 </td>
               </tr>
@@ -113,25 +148,34 @@ export default function DashboardPage() {
                 <td className="px-4 py-3">{row.jumlah_bab}</td>
                 <td className="px-4 py-3 text-center">
                   <div className="flex justify-center gap-2">
-                    {/* Init / Upsert */}
+                    {/* Sync Bab */}
                     <Button
-                      size="icon"
-                      variant="outline"
-                      disabled={initLoadingId === row.id}
-                      onClick={() => handleInitGeneration(row.id)}
-                      title="Sync"
-                    >
-                      <RefreshCcw className="w-4 h-4" />
-                    </Button>
+  size="icon"
+  variant="outline"
+  disabled={isSyncing(row.id)}
+  onClick={() => handleSyncBab(row.id)}
+  title="Sync Bab (Generate Struktur)"
+>
+  <RefreshCcw
+    className={`w-4 h-4 ${
+      isSyncing(row.id) ? 'animate-spin' : ''
+    }`}
+  />
+</Button>
 
                     {/* Navigate to Generate */}
-                    <Button
-                      size="icon"
-                      onClick={() => navigate(`/generate/${row.id}`)}
-                      title="Aksi"
-                    >
-                      <Play className="w-4 h-4" />
-                    </Button>
+                   <Button
+  size="icon"
+  disabled={isSyncing(row.id)}
+  onClick={() => navigate(`/generate/${row.id}`)}
+  title={
+    isSyncing(row.id)
+      ? 'Sedang sinkronisasi bab'
+      : 'Generate Administrasi'
+  }
+>
+  <Play className="w-4 h-4" />
+</Button>
                   </div>
                 </td>
               </tr>
