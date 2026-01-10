@@ -56,8 +56,19 @@ export default function GeneratePage() {
         )
       `)
       .eq('master_id', masterId)
-      .order('jenis', { ascending: true })
-
+      .order(
+    `
+    case jenis
+      when 'prota' then 1
+      when 'prosem' then 2
+      when 'rpm' then 3
+      when 'lkpd' then 4
+    end
+    `,
+    { ascending: true }
+  )
+  .order('babs.nomor', { ascending: true, nullsFirst: true })
+    
     if (error) {
       console.error('❌ fetchStatuses error:', error)
       setRows([])
