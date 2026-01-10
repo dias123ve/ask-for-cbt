@@ -32,11 +32,12 @@ export default function GeneratePage() {
   const [loading, setLoading] = useState(false)
 
   /* -------------------------------------------------- */
-  /* FETCH DATA */
+  /* INIT */
   /* -------------------------------------------------- */
 
   useEffect(() => {
     if (!masterId) return
+    console.log('🔑 masterId from route =', masterId)
     fetchAll()
   }, [masterId])
 
@@ -44,31 +45,46 @@ export default function GeneratePage() {
     await Promise.all([fetchStatuses(), fetchBabs()])
   }
 
+  /* -------------------------------------------------- */
+  /* FETCH generation_status (NO JOIN) */
+  /* -------------------------------------------------- */
+
   async function fetchStatuses() {
     if (!masterId) return
+
+    console.log('📡 FETCH generation_status...')
 
     const { data, error } = await supabase
       .from('generation_status')
       .select('*')
       .eq('master_id', masterId)
-      .order('jenis', { ascending: true })
 
-    console.log('FETCH generation_status:', data, error)
+    console.log('📄 generation_status RESULT:', data)
+    console.log('❌ generation_status ERROR:', error)
 
     if (!error && data) {
       setRows(data)
+    } else {
+      setRows([])
     }
   }
 
+  /* -------------------------------------------------- */
+  /* FETCH babs (SEPARATE QUERY) */
+  /* -------------------------------------------------- */
+
   async function fetchBabs() {
     if (!masterId) return
+
+    console.log('📡 FETCH babs...')
 
     const { data, error } = await supabase
       .from('babs')
       .select('id, nomor, judul')
       .eq('master_id', masterId)
 
-    console.log('FETCH babs:', data, error)
+    console.log('📄 babs RESULT:', data)
+    console.log('❌ babs ERROR:', error)
 
     if (!error && data) {
       const map: Record<string, { nomor: number; judul: string }> = {}
@@ -76,6 +92,8 @@ export default function GeneratePage() {
         map[b.id] = { nomor: b.nomor, judul: b.judul }
       })
       setBabsMap(map)
+    } else {
+      setBabsMap({})
     }
   }
 
@@ -87,17 +105,21 @@ export default function GeneratePage() {
     if (!masterId) return
     setLoading(true)
 
+    console.log('🚀 INIT generation for master', masterId)
+
     const { error } = await supabase.rpc(
       'init_generation_for_master',
       { p_master_id: masterId }
     )
 
     if (error) {
-      console.error(error)
+      console.error('❌ init_generation_for_master ERROR:', error)
       alert('Gagal inisialisasi data')
       setLoading(false)
       return
     }
+
+    console.log('⚙️ Trigger orchestrator')
 
     await callEdge({
       functionName: 'run_generation_orchestrator',
