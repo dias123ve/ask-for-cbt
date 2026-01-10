@@ -18,7 +18,7 @@ type GenerationStatus = {
   } | null
 }
 
-export default function GenerateAdministrasi() {
+export default function GeneratePage() {
   const [masterId, setMasterId] = useState<string | null>(null)
   const [rows, setRows] = useState<GenerationStatus[]>([])
   const [loading, setLoading] = useState(false)
