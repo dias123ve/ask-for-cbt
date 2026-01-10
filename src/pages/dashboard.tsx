@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
+import { RefreshCcw, Play } from 'lucide-react'
 
 type MasterRow = {
   id: string
@@ -16,6 +17,7 @@ export default function DashboardPage() {
 
   const [masters, setMasters] = useState<MasterRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [initLoadingId, setInitLoadingId] = useState<string | null>(null)
 
   // Auth guard + fetch data
   useEffect(() => {
@@ -44,6 +46,22 @@ export default function DashboardPage() {
   const handleLogout = async () => {
     await supabase.auth.signOut()
     navigate('/login', { replace: true })
+  }
+
+  const handleInitGeneration = async (masterId: string) => {
+    setInitLoadingId(masterId)
+
+    const { error } = await supabase.rpc(
+      'init_generation_for_master',
+      { p_master_id: masterId }
+    )
+
+    if (error) {
+      console.error('Init generation error:', error)
+      alert('Gagal inisialisasi administrasi')
+    }
+
+    setInitLoadingId(null)
   }
 
   if (loading) {
@@ -94,12 +112,27 @@ export default function DashboardPage() {
                 <td className="px-4 py-3">{row.kelas}</td>
                 <td className="px-4 py-3">{row.jumlah_bab}</td>
                 <td className="px-4 py-3 text-center">
-                  <Button
-                    size="sm"
-                    onClick={() => navigate(`/generate/${row.id}`)}
-                  >
-                    Generate
-                  </Button>
+                  <div className="flex justify-center gap-2">
+                    {/* Init / Upsert */}
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      disabled={initLoadingId === row.id}
+                      onClick={() => handleInitGeneration(row.id)}
+                      title="Sync"
+                    >
+                      <RefreshCcw className="w-4 h-4" />
+                    </Button>
+
+                    {/* Navigate to Generate */}
+                    <Button
+                      size="icon"
+                      onClick={() => navigate(`/generate/${row.id}`)}
+                      title="Aksi"
+                    >
+                      <Play className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}
