@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Loader2, Play, Pause, Download } from 'lucide-react'
+import { callEdge } from '@/lib/callEdge'
 
 type GenerationStatus = {
   id: string
@@ -28,7 +29,7 @@ export default function GeneratePage() {
   /* -------------------------------------------------- */
 
   useEffect(() => {
-    // ambil master aktif (contoh: dari localStorage / route state)
+    // master aktif diset dari dashboard / route
     const stored = localStorage.getItem('active_master_id')
     if (stored) setMasterId(stored)
   }, [])
@@ -39,10 +40,19 @@ export default function GeneratePage() {
   }, [masterId])
 
   async function fetchStatuses() {
+    if (!masterId) return
+
     const { data, error } = await supabase
       .from('generation_status')
       .select(`
-        *,
+        id,
+        master_id,
+        jenis,
+        bab_id,
+        status,
+        current_step,
+        total_steps,
+        file_path,
         babs (
           nomor,
           judul
@@ -51,73 +61,39 @@ export default function GeneratePage() {
       .eq('master_id', masterId)
       .order('jenis', { ascending: true })
 
-    if (!error && data) setRows(data)
+    if (!error && data) {
+      setRows(data)
+    }
   }
 
   /* -------------------------------------------------- */
-  /* GENERATE SEMUA (FASE 1) */
+  /* GENERATE (TRIGGER ORCHESTRATOR) */
   /* -------------------------------------------------- */
 
   async function handleGenerateAll() {
     if (!masterId) return
     setLoading(true)
 
-    // ambil bab
-    const { data: babs } = await supabase
-      .from('babs')
-      .select('id')
-      .eq('master_id', masterId)
-
-    const inserts: any[] = []
-
-    // prota & prosem
-    inserts.push(
-      {
-        master_id: masterId,
-        jenis: 'prota',
-        status: 'pending',
-        current_step: 0
-      },
-      {
-        master_id: masterId,
-        jenis: 'prosem',
-        status: 'pending',
-        current_step: 0
-      }
+    // 1️⃣ pastikan struktur data (BAB + generation_status) ada
+    const { error } = await supabase.rpc(
+      'init_generation_for_master',
+      { p_master_id: masterId }
     )
 
-    // rpm & lkpd per bab
-    babs?.forEach((bab) => {
-      inserts.push(
-        {
-          master_id: masterId,
-          bab_id: bab.id,
-          jenis: 'rpm',
-          status: 'pending',
-          current_step: 0
-        },
-        {
-          master_id: masterId,
-          bab_id: bab.id,
-          jenis: 'lkpd',
-          status: 'pending',
-          current_step: 0
-        }
-      )
+    if (error) {
+      console.error('Init generation error:', error)
+      alert('Gagal inisialisasi data generate')
+      setLoading(false)
+      return
+    }
+
+    // 2️⃣ trigger orchestrator (1 langkah saja)
+    await callEdge({
+      functionName: 'run_generation_orchestrator',
+      body: { master_id: masterId },
     })
 
-    // insert (idempotent: conflict di-handle di DB)
-    await supabase
-      .from('generation_status')
-      .upsert(inserts, {
-        onConflict: 'master_id,jenis,bab_id'
-      })
-
-    // trigger orchestrator (1 kali)
-    await supabase.functions.invoke('run_generation_orchestrator', {
-      body: { master_id: masterId }
-    })
-
+    // 3️⃣ refresh UI
     await fetchStatuses()
     setLoading(false)
   }
@@ -139,7 +115,7 @@ export default function GeneratePage() {
   function renderAction(row: GenerationStatus) {
     if (row.status === 'done' && row.file_path) {
       return (
-        <a href={row.file_path} target="_blank">
+        <a href={row.file_path} target="_blank" rel="noreferrer">
           <Download className="w-4 h-4" />
         </a>
       )
@@ -159,15 +135,19 @@ export default function GeneratePage() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
-        <h1 className="text-xl font-semibold">Generate Administrasi</h1>
+        <h1 className="text-xl font-semibold">
+          Generate Administrasi
+        </h1>
 
         <Button onClick={handleGenerateAll} disabled={loading}>
-          {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+          {loading && (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          )}
           Generate Semua
         </Button>
       </div>
 
-      <div className="border rounded-lg overflow-hidden">
+      <div className="border rounded-lg overflow-hidden bg-white">
         <table className="w-full text-sm">
           <thead className="bg-gray-100">
             <tr>
@@ -193,7 +173,10 @@ export default function GeneratePage() {
 
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="p-6 text-center text-gray-500">
+                <td
+                  colSpan={5}
+                  className="p-6 text-center text-gray-500"
+                >
                   Belum ada data generate
                 </td>
               </tr>
