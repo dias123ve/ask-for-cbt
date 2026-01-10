@@ -19,6 +19,7 @@ export default function DashboardPage() {
   const [masters, setMasters] = useState<MasterRow[]>([])
   const [loading, setLoading] = useState(true)
   const [syncLoadingId, setSyncLoadingId] = useState<string | null>(null)
+  const isSyncing = (masterId: string) => syncLoadingId === masterId
 
   /* =========================
      INIT + AUTH GUARD
