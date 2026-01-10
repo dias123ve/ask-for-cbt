@@ -14,66 +14,79 @@ type GenerationStatus = {
   current_step: number | null
   total_steps: number | null
   file_path: string | null
-  babs?: {
-    nomor: number
-    judul: string
-  } | null
+}
+
+type Bab = {
+  id: string
+  nomor: number
+  judul: string
 }
 
 export default function GeneratePage() {
-  // ✅ SINGLE SOURCE OF TRUTH
   const { masterId } = useParams<{ masterId: string }>()
 
   const [rows, setRows] = useState<GenerationStatus[]>([])
+  const [babsMap, setBabsMap] = useState<
+    Record<string, { nomor: number; judul: string }>
+  >({})
   const [loading, setLoading] = useState(false)
 
   /* -------------------------------------------------- */
-  /* FETCH STATUS */
+  /* FETCH DATA */
   /* -------------------------------------------------- */
 
   useEffect(() => {
     if (!masterId) return
-    fetchStatuses()
+    fetchAll()
   }, [masterId])
+
+  async function fetchAll() {
+    await Promise.all([fetchStatuses(), fetchBabs()])
+  }
 
   async function fetchStatuses() {
     if (!masterId) return
 
     const { data, error } = await supabase
-  .from('generation_status')
-  .select(`
-    id,
-    master_id,
-    jenis,
-    bab_id,
-    status,
-    current_step,
-    total_steps,
-    file_path,
-    babs:babs!generation_status_bab_id_fkey (
-      nomor,
-      judul
-    )
-  `)
-  .eq('master_id', masterId)
-  .order('jenis', { ascending: true })
+      .from('generation_status')
+      .select('*')
+      .eq('master_id', masterId)
+      .order('jenis', { ascending: true })
 
-console.log('FETCH RESULT:', data, error)
+    console.log('FETCH generation_status:', data, error)
 
     if (!error && data) {
       setRows(data)
     }
   }
 
+  async function fetchBabs() {
+    if (!masterId) return
+
+    const { data, error } = await supabase
+      .from('babs')
+      .select('id, nomor, judul')
+      .eq('master_id', masterId)
+
+    console.log('FETCH babs:', data, error)
+
+    if (!error && data) {
+      const map: Record<string, { nomor: number; judul: string }> = {}
+      data.forEach((b: Bab) => {
+        map[b.id] = { nomor: b.nomor, judul: b.judul }
+      })
+      setBabsMap(map)
+    }
+  }
+
   /* -------------------------------------------------- */
-  /* GENERATE (TRIGGER ORCHESTRATOR) */
+  /* GENERATE */
   /* -------------------------------------------------- */
 
   async function handleGenerateAll() {
     if (!masterId) return
     setLoading(true)
 
-    // 1️⃣ init data (BAB + generation_status)
     const { error } = await supabase.rpc(
       'init_generation_for_master',
       { p_master_id: masterId }
@@ -86,14 +99,12 @@ console.log('FETCH RESULT:', data, error)
       return
     }
 
-    // 2️⃣ trigger orchestrator (1 langkah)
     await callEdge({
       functionName: 'run_generation_orchestrator',
       body: { master_id: masterId },
     })
 
-    // 3️⃣ refresh
-    await fetchStatuses()
+    await fetchAll()
     setLoading(false)
   }
 
@@ -107,8 +118,10 @@ console.log('FETCH RESULT:', data, error)
   }
 
   function renderBab(row: GenerationStatus) {
-    if (!row.babs) return '–'
-    return `Bab ${row.babs.nomor}`
+    if (!row.bab_id) return '–'
+    const bab = babsMap[row.bab_id]
+    if (!bab) return '–'
+    return `Bab ${bab.nomor}`
   }
 
   function renderAction(row: GenerationStatus) {
