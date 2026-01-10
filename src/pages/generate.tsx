@@ -19,9 +19,16 @@ export default function GeneratePage() {
 
   const [files, setFiles] = useState<GeneratedFile[]>([])
   const [loading, setLoading] = useState(true)
+
+  // BAB generation state
+  const [babGenerated, setBabGenerated] = useState(false)
+  const [generatingBab, setGeneratingBab] = useState(false)
+
   const [runningAll, setRunningAll] = useState(false)
 
-  // Auth guard + fetch data
+  // ===============================
+  // INIT
+  // ===============================
   useEffect(() => {
     const init = async () => {
       const { data: session } = await supabase.auth.getSession()
@@ -30,13 +37,20 @@ export default function GeneratePage() {
         return
       }
 
-      await fetchFiles()
+      await Promise.all([
+        fetchFiles(),
+        checkBabGenerated(),
+      ])
+
       setLoading(false)
     }
 
     init()
   }, [master_id, navigate])
 
+  // ===============================
+  // FETCHERS
+  // ===============================
   const fetchFiles = async () => {
     const { data } = await supabase
       .from('generated_files')
@@ -47,7 +61,40 @@ export default function GeneratePage() {
     if (data) setFiles(data)
   }
 
-  // Generate single file
+  const checkBabGenerated = async () => {
+    const { count } = await supabase
+      .from('babs')
+      .select('*', { count: 'exact', head: true })
+      .eq('master_id', master_id)
+
+    setBabGenerated((count ?? 0) > 0)
+  }
+
+  // ===============================
+  // ACTIONS
+  // ===============================
+  const generateBabOnce = async () => {
+    if (babGenerated || generatingBab) return
+
+    setGeneratingBab(true)
+
+    const { error } = await supabase.rpc(
+      'generate_babs_from_master',
+      { p_master_id: master_id }
+    )
+
+    setGeneratingBab(false)
+
+    if (error) {
+      alert('Gagal generate BAB')
+      console.error(error)
+      return
+    }
+
+    setBabGenerated(true)
+    alert('BAB berhasil digenerate')
+  }
+
   const generateOne = async (file: GeneratedFile) => {
     const endpoint = `/functions/v1/generate_${file.type}`
 
@@ -57,11 +104,9 @@ export default function GeneratePage() {
       body: JSON.stringify({ generated_file_id: file.id }),
     })
 
-    // refresh status
     await fetchFiles()
   }
 
-  // Generate all (orchestrator)
   const generateAll = async () => {
     setRunningAll(true)
 
@@ -77,6 +122,9 @@ export default function GeneratePage() {
 
   const doneCount = files.filter(f => f.status === 'success').length
 
+  // ===============================
+  // RENDER
+  // ===============================
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -87,7 +135,7 @@ export default function GeneratePage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 space-y-6">
-      {/* Header */}
+      {/* HEADER */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-xl font-semibold">
@@ -98,15 +146,29 @@ export default function GeneratePage() {
           </p>
         </div>
 
-        <Button
-          onClick={generateAll}
-          disabled={runningAll}
-        >
-          {runningAll ? 'Menjalankan...' : 'Generate Semua'}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={generateBabOnce}
+            disabled={babGenerated || generatingBab}
+          >
+            {babGenerated
+              ? 'BAB Sudah Digenerate'
+              : generatingBab
+                ? 'Mengenerate BAB...'
+                : 'Generate BAB'}
+          </Button>
+
+          <Button
+            onClick={generateAll}
+            disabled={runningAll || !babGenerated}
+          >
+            {runningAll ? 'Menjalankan...' : 'Generate Semua'}
+          </Button>
+        </div>
       </div>
 
-      {/* File list */}
+      {/* FILE LIST */}
       <div className="bg-white rounded-xl shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-100">
@@ -116,6 +178,7 @@ export default function GeneratePage() {
               <th className="px-4 py-3 text-center">Aksi</th>
             </tr>
           </thead>
+
           <tbody>
             {files.map(file => (
               <tr key={file.id} className="border-t">
@@ -140,7 +203,10 @@ export default function GeneratePage() {
                     <Button
                       size="sm"
                       onClick={() => generateOne(file)}
-                      disabled={file.status === 'generating'}
+                      disabled={
+                        file.status === 'generating' ||
+                        !babGenerated
+                      }
                     >
                       Generate
                     </Button>
