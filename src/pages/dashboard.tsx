@@ -87,11 +87,16 @@ export default function DashboardPage() {
       })
     }
 
-    // 4️⃣ 🔥 SYNC PROGRESS LKPD (RPC BARU)
+    // 4️⃣ SYNC PROGRESS LKPD (RPC BARU)
     await supabase.rpc('sync_lkpd_generation_progress', {
       p_master_id: masterId,
     })
 
+    // 5️⃣ FINALIZE MASTER (JP + STATUS)
+await supabase.rpc('finalize_master_after_bab_sync', {
+  p_master_id: masterId,
+})
+    
   } catch (err) {
     console.error('Sync bab error:', err)
     alert('Gagal sinkronisasi bab')
