@@ -1,299 +1,212 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { supabase } from '@/integrations/supabase/client'
+import { Button } from '@/components/ui/button'
+import { Play, Zap } from 'lucide-react'
+import { callEdge } from '@/lib/callEdge'
 
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-)
-
-const MAX_CONCURRENT = 3
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+type MasterRow = {
+  id: string
+  nama_guru: string
+  mapel: string
+  kelas: string
+  jumlah_bab: number
+  generate_status: string | null
 }
 
-Deno.serve(async (req) => {
-  // CORS Preflight
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: corsHeaders,
-    })
+export default function DashboardPage() {
+  const navigate = useNavigate()
+
+  const [masters, setMasters] = useState<MasterRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [invoking, setInvoking] = useState(false)
+
+  /* =========================
+     INIT + AUTH GUARD
+     ========================= */
+  useEffect(() => {
+    const init = async () => {
+      const { data: sessionData } = await supabase.auth.getSession()
+
+      if (!sessionData.session) {
+        navigate('/login', { replace: true })
+        return
+      }
+
+      await fetchMasters()
+      setLoading(false)
+    }
+
+    init()
+  }, [navigate])
+
+  /* =========================
+     FETCH MASTERS
+     ========================= */
+  const fetchMasters = async () => {
+    const { data, error } = await supabase
+      .from('masters')
+      .select('id, nama_guru, mapel, kelas, jumlah_bab, generate_status')
+      .order('created_at', { ascending: false })
+
+    if (!error && data) {
+      setMasters(data)
+    }
   }
-  try {
-    /* ============================================ */
-    /* 1️⃣ CEK BERAPA YANG SEDANG JALAN            */
-    /* ============================================ */
 
-    const { count: sedangJalanCount } = await supabase
-      .from("masters")
-      .select("id", { count: "exact", head: true })
-      .eq("generate_status", "sedang_jalan")
+  /* =========================
+     LOGOUT
+     ========================= */
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    navigate('/login', { replace: true })
+  }
 
-    const runningCount = sedangJalanCount ?? 0
+  /* =========================
+     INVOKE CRON RUNNER
+     ========================= */
+  const handleInvokeCron = async () => {
+    setInvoking(true)
 
-    // 🚫 Jika sudah 3 sedang_jalan → SKIP SEMUA
-    if (runningCount >= MAX_CONCURRENT) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: `Quota full: ${runningCount} sedang_jalan`,
-          skipped: true,
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      )
-    }
-
-    // 📊 Hitung slot tersisa
-    const availableSlots = MAX_CONCURRENT - runningCount
-
-    console.log(`🎯 Available slots: ${availableSlots} (${runningCount} sedang_jalan)`)
-
-    /* ============================================ */
-    /* 2️⃣ AMBIL ELIGIBLE MASTERS (PRIORITAS)      */
-    /* ============================================ */
-
-    // A. belum_siap (tertua dulu)
-    const { data: belumSiapList } = await supabase
-      .from("masters")
-      .select("id, generate_status, generate_updated_at")
-      .eq("generate_status", "belum_siap")
-      .order("generate_updated_at", { ascending: true })
-      .limit(availableSlots)
-
-    // B. belum_mulai / menunggu (tertua dulu)
-    const { data: readyList } = await supabase
-      .from("masters")
-      .select("id, generate_status, percobaan, generate_updated_at")
-      .in("generate_status", ["belum_mulai", "menunggu"])
-      .order("generate_updated_at", { ascending: true })
-      .limit(availableSlots)
-
-    // C. sedang_jalan timeout (>10 menit)
-    const timeout = new Date(Date.now() - 10 * 60 * 1000).toISOString()
-    const { data: stuckList } = await supabase
-      .from("masters")
-      .select("id, generate_status, percobaan, generate_updated_at")
-      .eq("generate_status", "sedang_jalan")
-      .lt("generate_updated_at", timeout)
-      .order("generate_updated_at", { ascending: true })
-      .limit(availableSlots)
-
-    /* ============================================ */
-    /* 3️⃣ PRIORITAS: belum_siap → ready → stuck   */
-    /* ============================================ */
-
-    const mastersToProcess: Array<{
-      id: string
-      action: "sync" | "orchestrate"
-      generate_status?: string
-      percobaan?: number
-    }> = []
-
-    // Priority 1: belum_siap
-    if (belumSiapList && belumSiapList.length > 0) {
-      for (const m of belumSiapList.slice(0, availableSlots)) {
-        mastersToProcess.push({ id: m.id, action: "sync" })
-      }
-    }
-
-    // Priority 2: belum_mulai / menunggu (jika masih ada slot)
-    if (mastersToProcess.length < availableSlots && readyList && readyList.length > 0) {
-      const remaining = availableSlots - mastersToProcess.length
-      for (const m of readyList.slice(0, remaining)) {
-        mastersToProcess.push({
-          id: m.id,
-          action: "orchestrate",
-          generate_status: m.generate_status,
-          percobaan: m.percobaan,
-        })
-      }
-    }
-
-    // Priority 3: stuck (jika masih ada slot)
-    if (mastersToProcess.length < availableSlots && stuckList && stuckList.length > 0) {
-      const remaining = availableSlots - mastersToProcess.length
-      for (const m of stuckList.slice(0, remaining)) {
-        mastersToProcess.push({
-          id: m.id,
-          action: "orchestrate",
-          generate_status: m.generate_status,
-          percobaan: m.percobaan,
-        })
-      }
-    }
-
-    /* ============================================ */
-    /* 4️⃣ TIDAK ADA YANG BISA DIPROSES            */
-    /* ============================================ */
-
-    if (mastersToProcess.length === 0) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "No eligible masters to process",
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      )
-    }
-
-    /* ============================================ */
-    /* 5️⃣ PROSES PARALLEL (SESUAI SLOT)           */
-    /* ============================================ */
-
-    const results = await Promise.allSettled(
-      mastersToProcess.map(async (master) => {
-        if (master.action === "sync") {
-          console.log(`🔄 Syncing: ${master.id}`)
-
-          // Update status → sedang_jalan SEBELUM sync
-          await supabase
-            .from("masters")
-            .update({ generate_status: "sedang_jalan" })
-            .eq("id", master.id)
-
-          await performSync(master.id)
-
-          return { id: master.id, action: "sync", success: true }
-        } else {
-          console.log(`▶️ Orchestrating: ${master.id}`)
-
-          const res = await fetch(
-            `${Deno.env.get("SUPABASE_URL")}/functions/v1/run_generation_orchestrator`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-                "apikey": Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-              },
-              body: JSON.stringify({ master_id: master.id }),
-            }
-          )
-
-          const text = await res.text()
-
-          if (!res.ok) {
-            throw new Error(`Orchestrator error: ${res.status} ${text}`)
-          }
-
-          return { id: master.id, action: "orchestrate", success: true, response: text }
-        }
+    try {
+      const result = await callEdge<{
+        success: boolean
+        message?: string
+        processed?: number
+        skipped?: boolean
+        results?: any[]
+        error?: string
+      }>({
+        functionName: 'cron_generation_runner',
       })
-    )
 
-    /* ============================================ */
-    /* 6️⃣ RETURN SUMMARY                          */
-    /* ============================================ */
+      if (!result) {
+        throw new Error('Gagal invoke cron')
+      }
 
-    const summary = results.map((r, idx) => {
-      if (r.status === "fulfilled") {
-        return r.value
+      if (result.success) {
+        console.log('Cron invoked:', result)
+        
+        // Refresh data setelah invoke
+        await fetchMasters()
+
+        // Tampilkan notifikasi sukses
+        if (result.processed && result.processed > 0) {
+          alert(`✅ Berhasil memproses ${result.processed} master(s)`)
+        } else if (result.skipped) {
+          alert(`ℹ️ ${result.message || 'Quota penuh atau tidak ada yang perlu diproses'}`)
+        } else {
+          alert('ℹ️ Tidak ada master yang perlu diproses')
+        }
       } else {
-        return {
-          id: mastersToProcess[idx].id,
-          action: mastersToProcess[idx].action,
-          success: false,
-          error: r.reason?.message || String(r.reason),
-        }
+        throw new Error(result.error || 'Cron runner error')
       }
-    })
+    } catch (err) {
+      console.error('Invoke cron error:', err)
+      alert('❌ Gagal menjalankan cron runner')
+    } finally {
+      setInvoking(false)
+    }
+  }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        processed: summary.length,
-        available_slots: availableSlots,
-        results: summary,
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    )
-  } catch (error) {
-    console.error("CRON ERROR:", error)
-    return new Response(
-      JSON.stringify({ success: false, error: String(error) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+  /* =========================
+     RENDER
+     ========================= */
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        Memuat...
+      </div>
     )
   }
-})
 
-/* ============================================== */
-/* 🔧 SYNC LOGIC                                 */
-/* ============================================== */
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-xl font-semibold">
+          Dashboard Administrasi
+        </h1>
+        
+        <div className="flex gap-3">
+          {/* Tombol Invoke Cron */}
+          <Button
+            onClick={handleInvokeCron}
+            disabled={invoking}
+            className="gap-2"
+          >
+            <Zap className={`w-4 h-4 ${invoking ? 'animate-pulse' : ''}`} />
+            {invoking ? 'Memproses...' : 'Run Generation'}
+          </Button>
 
-async function performSync(masterId: string) {
-  try {
-    // 1️⃣ Init generation
-    await supabase.rpc('init_generation_for_master', {
-      p_master_id: masterId,
-    })
+          <Button variant="outline" onClick={handleLogout}>
+            Logout
+          </Button>
+        </div>
+      </div>
 
-    // 2️⃣ Ambil semua BAB
-    const { data: babs, error } = await supabase
-      .from('babs')
-      .select('id')
-      .eq('master_id', masterId)
-      .order('nomor')
+      {/* Table */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-100">
+            <tr>
+              <th className="px-4 py-3 text-left">Guru</th>
+              <th className="px-4 py-3 text-left">Mapel</th>
+              <th className="px-4 py-3 text-left">Kelas</th>
+              <th className="px-4 py-3 text-left">Bab</th>
+              <th className="px-4 py-3 text-left">Status</th>
+              <th className="px-4 py-3 text-center">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {masters.length === 0 && (
+              <tr>
+                <td
+                  colSpan={6}
+                  className="px-4 py-6 text-center text-slate-500"
+                >
+                  Belum ada data
+                </td>
+              </tr>
+            )}
 
-    if (error || !babs) {
-      throw new Error('Gagal mengambil data bab')
-    }
-
-    // 3️⃣ Generate struktur BAB (AI) — serial
-    for (const bab of babs) {
-      const res = await fetch(
-        `${Deno.env.get("SUPABASE_URL")}/functions/v1/generate_bab_ai_structure`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            "apikey": Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-          },
-          body: JSON.stringify({ bab_id: bab.id }),
-        }
-      )
-
-      if (!res.ok) {
-        const err = await res.text()
-        throw new Error(`Failed to generate bab ${bab.id}: ${err}`)
-      }
-    }
-
-    // 4️⃣ Sync progress LKPD
-    await supabase.rpc('sync_lkpd_generation_progress', {
-      p_master_id: masterId,
-    })
-
-    // 5️⃣ Finalize master
-    await supabase.rpc('finalize_master_after_bab_sync', {
-      p_master_id: masterId,
-    })
-
-    console.log(`✅ Sync completed for master ${masterId}`)
-  } catch (err) {
-    console.error(`❌ Sync failed for master ${masterId}:`, err)
-    
-    // Rollback status jika gagal
-    await supabase
-      .from("masters")
-      .update({ generate_status: "belum_siap" })
-      .eq("id", masterId)
-    
-    throw err
-  }
+            {masters.map((row) => (
+              <tr key={row.id} className="border-t">
+                <td className="px-4 py-3">{row.nama_guru}</td>
+                <td className="px-4 py-3">{row.mapel}</td>
+                <td className="px-4 py-3">{row.kelas}</td>
+                <td className="px-4 py-3">{row.jumlah_bab}</td>
+                <td className="px-4 py-3">
+                  <span
+                    className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                      row.generate_status === 'selesai'
+                        ? 'bg-green-100 text-green-700'
+                        : row.generate_status === 'sedang_jalan'
+                        ? 'bg-blue-100 text-blue-700'
+                        : row.generate_status === 'error'
+                        ? 'bg-red-100 text-red-700'
+                        : row.generate_status === 'belum_siap'
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {row.generate_status || 'belum_siap'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <Button
+                    size="icon"
+                    onClick={() => navigate(`/generate/${row.id}`)}
+                    title="Lihat Detail Generate"
+                  >
+                    <Play className="w-4 h-4" />
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
