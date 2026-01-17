@@ -142,7 +142,7 @@ export default function GeneratePage() {
     setRows(sorted)
   }
 
- /* ================================================== */
+  /* ================================================== */
   /* BUTTON STATE LOGIC                                 */
   /* ================================================== */
   function getButtonState(): {
@@ -195,14 +195,17 @@ export default function GeneratePage() {
     if (!masterId) return
     setLoading(true)
 
-    // Trigger orchestrator
-    await callEdge({
-      functionName: 'run_generation_orchestrator',
-      body: { master_id: masterId },
-    })
+    try {
+      // Trigger orchestrator
+      await callEdge({
+        functionName: 'run_generation_orchestrator',
+        body: { master_id: masterId },
+      })
 
-    await fetchData()
-    setLoading(false)
+      await fetchData()
+    } finally {
+      setLoading(false)
+    }
   }
 
   /* ================================================== */
@@ -274,12 +277,12 @@ export default function GeneratePage() {
 
         <Button
           onClick={handleGenerateAll}
-          disabled={buttonState.disabled || loading}
+          disabled={buttonState.disabled}
         >
           {(buttonState.loading || loading) && (
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
           )}
-          {buttonState.text}
+          {loading ? 'Menunggu...' : buttonState.text}
         </Button>
       </div>
 
