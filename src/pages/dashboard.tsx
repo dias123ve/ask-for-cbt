@@ -11,6 +11,7 @@ type MasterRow = {
   mapel: string
   kelas: string
   jumlah_bab: number
+  generation_status: string | null
 }
 
 export default function DashboardPage() {
@@ -18,8 +19,10 @@ export default function DashboardPage() {
 
   const [masters, setMasters] = useState<MasterRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [syncLoadingId, setSyncLoadingId] = useState<string | null>(null)
-  const isSyncing = (masterId: string) => syncLoadingId === masterId
+  
+  // ✅ UBAH: Gunakan Set untuk tracking multiple sync
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+  const isSyncing = (masterId: string) => syncingIds.has(masterId)
 
   /* =========================
      INIT + AUTH GUARD
@@ -35,7 +38,7 @@ export default function DashboardPage() {
 
       const { data, error } = await supabase
         .from('masters')
-        .select('id, nama_guru, mapel, kelas, jumlah_bab')
+        .select('id, nama_guru, mapel, kelas, jumlah_bab, generation_status')
         .order('created_at', { ascending: false })
 
       if (!error && data) {
@@ -57,53 +60,59 @@ export default function DashboardPage() {
   }
 
   /* =========================
-     SYNC BAB (MANUAL)
+     SYNC BAB (PARALLEL SUPPORT)
      ========================= */
- const handleSyncBab = async (masterId: string) => {
-  setSyncLoadingId(masterId)
+  const handleSyncBab = async (masterId: string) => {
+    // ✅ Tambahkan ke Set
+    setSyncingIds(prev => new Set(prev).add(masterId))
 
-  try {
-    // 1️⃣ Init generation (struktur awal)
-    await supabase.rpc('init_generation_for_master', {
-      p_master_id: masterId,
-    })
+    try {
+      // 1️⃣ Init generation (struktur awal)
+      await supabase.rpc('init_generation_for_master', {
+        p_master_id: masterId,
+      })
 
-    // 2️⃣ Ambil semua BAB
-    const { data: babs, error } = await supabase
-      .from('babs')
-      .select('id')
-      .eq('master_id', masterId)
-      .order('nomor')
+      // 2️⃣ Ambil semua BAB
+      const { data: babs, error } = await supabase
+        .from('babs')
+        .select('id')
+        .eq('master_id', masterId)
+        .order('nomor')
 
-    if (error || !babs) {
-      throw new Error('Gagal mengambil data bab')
-    }
+      if (error || !babs) {
+        throw new Error('Gagal mengambil data bab')
+      }
 
-    // 3️⃣ Generate struktur BAB (AI) — serial & aman
-    for (const bab of babs) {
-      await callEdge({
-        functionName: 'generate_bab_ai_structure',
-        body: { bab_id: bab.id },
+      // 3️⃣ Generate struktur BAB (AI) — serial per master
+      for (const bab of babs) {
+        await callEdge({
+          functionName: 'generate_bab_ai_structure',
+          body: { bab_id: bab.id },
+        })
+      }
+
+      // 4️⃣ SYNC PROGRESS LKPD
+      await supabase.rpc('sync_lkpd_generation_progress', {
+        p_master_id: masterId,
+      })
+
+      // 5️⃣ FINALIZE MASTER
+      await supabase.rpc('finalize_master_after_bab_sync', {
+        p_master_id: masterId,
+      })
+      
+    } catch (err) {
+      console.error('Sync bab error:', err)
+      alert('Gagal sinkronisasi bab')
+    } finally {
+      // ✅ Hapus dari Set
+      setSyncingIds(prev => {
+        const next = new Set(prev)
+        next.delete(masterId)
+        return next
       })
     }
-
-    // 4️⃣ SYNC PROGRESS LKPD (RPC BARU)
-    await supabase.rpc('sync_lkpd_generation_progress', {
-      p_master_id: masterId,
-    })
-
-    // 5️⃣ FINALIZE MASTER (JP + STATUS)
-await supabase.rpc('finalize_master_after_bab_sync', {
-  p_master_id: masterId,
-})
-    
-  } catch (err) {
-    console.error('Sync bab error:', err)
-    alert('Gagal sinkronisasi bab')
-  } finally {
-    setSyncLoadingId(null)
   }
-}
 
   /* =========================
      RENDER
@@ -160,34 +169,41 @@ await supabase.rpc('finalize_master_after_bab_sync', {
                 <td className="px-4 py-3">{row.jumlah_bab}</td>
                 <td className="px-4 py-3 text-center">
                   <div className="flex justify-center gap-2">
-                    {/* Sync Bab */}
+                    {/* Sync Bab - HANYA BISA JIKA belum_siap */}
                     <Button
-  size="icon"
-  variant="outline"
-  disabled={isSyncing(row.id)}
-  onClick={() => handleSyncBab(row.id)}
-  title="Sync Bab (Generate Struktur)"
->
-  <RefreshCcw
-    className={`w-4 h-4 ${
-      isSyncing(row.id) ? 'animate-spin' : ''
-    }`}
-  />
-</Button>
+                      size="icon"
+                      variant="outline"
+                      disabled={
+                        isSyncing(row.id) || 
+                        row.generation_status !== 'belum_siap'
+                      }
+                      onClick={() => handleSyncBab(row.id)}
+                      title={
+                        row.generation_status !== 'belum_siap'
+                          ? 'Sync hanya tersedia untuk status belum_siap'
+                          : 'Sync Bab (Generate Struktur)'
+                      }
+                    >
+                      <RefreshCcw
+                        className={`w-4 h-4 ${
+                          isSyncing(row.id) ? 'animate-spin' : ''
+                        }`}
+                      />
+                    </Button>
 
                     {/* Navigate to Generate */}
-                   <Button
-  size="icon"
-  disabled={isSyncing(row.id)}
-  onClick={() => navigate(`/generate/${row.id}`)}
-  title={
-    isSyncing(row.id)
-      ? 'Sedang sinkronisasi bab'
-      : 'Generate Administrasi'
-  }
->
-  <Play className="w-4 h-4" />
-</Button>
+                    <Button
+                      size="icon"
+                      disabled={isSyncing(row.id)}
+                      onClick={() => navigate(`/generate/${row.id}`)}
+                      title={
+                        isSyncing(row.id)
+                          ? 'Sedang sinkronisasi bab'
+                          : 'Generate Administrasi'
+                      }
+                    >
+                      <Play className="w-4 h-4" />
+                    </Button>
                   </div>
                 </td>
               </tr>
