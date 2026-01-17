@@ -142,7 +142,7 @@ export default function GeneratePage() {
     setRows(sorted)
   }
 
-  /* ================================================== */
+ /* ================================================== */
   /* BUTTON STATE LOGIC                                 */
   /* ================================================== */
   function getButtonState(): {
@@ -172,12 +172,12 @@ export default function GeneratePage() {
           return { disabled: false, loading: false, text: 'Generate Ulang' }
         } else {
           // ⏳ Loading (masih menunggu kurang dari 1 menit)
-          return { disabled: true, loading: true, text: 'Menunggu...' }
+          return { disabled: false, loading: true, text: 'Menunggu...' }
         }
 
       case 'sedang_proses':
-        // ⏳ Loading
-        return { disabled: true, loading: true, text: 'Sedang Proses...' }
+        // ⏳ Loading (sedang jalan)
+        return { disabled: false, loading: true, text: 'Sedang Proses...' }
 
       case 'error':
       case 'selesai':
