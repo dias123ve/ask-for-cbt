@@ -145,7 +145,7 @@ export default function GeneratePage() {
   /* ================================================== */
   /* BUTTON STATE LOGIC                                 */
   /* ================================================== */
-  function getButtonState(): {
+ function getButtonState(): {
     disabled: boolean
     loading: boolean
     text: string
@@ -164,27 +164,25 @@ export default function GeneratePage() {
     switch (generate_status) {
       case 'belum_mulai':
         // ✅ Buka (enabled)
-        return { disabled: false, loading: false, text: 'Generate Semua' }
+        return { disabled: false, loading: false, text: 'Generate' }
 
       case 'menunggu':
         if (diffMinutes > 1) {
           // ✅ Buka (sudah lebih dari 1 menit)
-          return { disabled: false, loading: false, text: 'Generate Ulang' }
-        } else {
-          // ⏳ Loading (masih menunggu kurang dari 1 menit)
-          return { disabled: false, loading: true, text: 'Menunggu...' }
+          return { disabled: false, loading: false, text: 'Generate' }
         }
-
+        // ⏳ Loading (masih menunggu kurang dari 1 menit) - fall through ke sedang_proses
+        
       case 'sedang_proses':
-        // ⏳ Loading (sedang jalan)
-        return { disabled: false, loading: true, text: 'Sedang Proses...' }
+        // ⏳ Loading (sedang jalan atau menunggu)
+        return { disabled: true, loading: true, text: 'Sedang Proses...' }
 
       case 'error':
       case 'selesai':
       case 'belum_siap':
       default:
         // 🚫 Disabled
-        return { disabled: true, loading: false, text: 'Generate Semua' }
+        return { disabled: true, loading: false, text: 'Generate' }
     }
   }
 
