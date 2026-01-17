@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
-import { RefreshCcw, Play } from 'lucide-react'
+import { Play, Zap } from 'lucide-react'
 import { callEdge } from '@/lib/callEdge'
 
 type MasterRow = {
@@ -19,10 +19,7 @@ export default function DashboardPage() {
 
   const [masters, setMasters] = useState<MasterRow[]>([])
   const [loading, setLoading] = useState(true)
-  
-  // ✅ UBAH: Gunakan Set untuk tracking multiple sync
-  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
-  const isSyncing = (masterId: string) => syncingIds.has(masterId)
+  const [invoking, setInvoking] = useState(false)
 
   /* =========================
      INIT + AUTH GUARD
@@ -36,20 +33,26 @@ export default function DashboardPage() {
         return
       }
 
-      const { data, error } = await supabase
-        .from('masters')
-        .select('id, nama_guru, mapel, kelas, jumlah_bab, generation_status')
-        .order('created_at', { ascending: false })
-
-      if (!error && data) {
-        setMasters(data)
-      }
-
+      await fetchMasters()
       setLoading(false)
     }
 
     init()
   }, [navigate])
+
+  /* =========================
+     FETCH MASTERS
+     ========================= */
+  const fetchMasters = async () => {
+    const { data, error } = await supabase
+      .from('masters')
+      .select('id, nama_guru, mapel, kelas, jumlah_bab, generation_status')
+      .order('created_at', { ascending: false })
+
+    if (!error && data) {
+      setMasters(data)
+    }
+  }
 
   /* =========================
      LOGOUT
@@ -60,57 +63,49 @@ export default function DashboardPage() {
   }
 
   /* =========================
-     SYNC BAB (PARALLEL SUPPORT)
+     INVOKE CRON RUNNER
      ========================= */
-  const handleSyncBab = async (masterId: string) => {
-    // ✅ Tambahkan ke Set
-    setSyncingIds(prev => new Set(prev).add(masterId))
+  const handleInvokeCron = async () => {
+    setInvoking(true)
 
     try {
-      // 1️⃣ Init generation (struktur awal)
-      await supabase.rpc('init_generation_for_master', {
-        p_master_id: masterId,
+      const result = await callEdge<{
+        success: boolean
+        message?: string
+        processed?: number
+        skipped?: boolean
+        results?: any[]
+        error?: string
+      }>({
+        functionName: 'cron_generation_runner',
       })
 
-      // 2️⃣ Ambil semua BAB
-      const { data: babs, error } = await supabase
-        .from('babs')
-        .select('id')
-        .eq('master_id', masterId)
-        .order('nomor')
-
-      if (error || !babs) {
-        throw new Error('Gagal mengambil data bab')
+      if (!result) {
+        throw new Error('Gagal invoke cron')
       }
 
-      // 3️⃣ Generate struktur BAB (AI) — serial per master
-      for (const bab of babs) {
-        await callEdge({
-          functionName: 'generate_bab_ai_structure',
-          body: { bab_id: bab.id },
-        })
+      if (result.success) {
+        console.log('Cron invoked:', result)
+        
+        // Refresh data setelah invoke
+        await fetchMasters()
+
+        // Tampilkan notifikasi sukses
+        if (result.processed && result.processed > 0) {
+          alert(`✅ Berhasil memproses ${result.processed} master(s)`)
+        } else if (result.skipped) {
+          alert(`ℹ️ ${result.message || 'Quota penuh atau tidak ada yang perlu diproses'}`)
+        } else {
+          alert('ℹ️ Tidak ada master yang perlu diproses')
+        }
+      } else {
+        throw new Error(result.error || 'Cron runner error')
       }
-
-      // 4️⃣ SYNC PROGRESS LKPD
-      await supabase.rpc('sync_lkpd_generation_progress', {
-        p_master_id: masterId,
-      })
-
-      // 5️⃣ FINALIZE MASTER
-      await supabase.rpc('finalize_master_after_bab_sync', {
-        p_master_id: masterId,
-      })
-      
     } catch (err) {
-      console.error('Sync bab error:', err)
-      alert('Gagal sinkronisasi bab')
+      console.error('Invoke cron error:', err)
+      alert('❌ Gagal menjalankan cron runner')
     } finally {
-      // ✅ Hapus dari Set
-      setSyncingIds(prev => {
-        const next = new Set(prev)
-        next.delete(masterId)
-        return next
-      })
+      setInvoking(false)
     }
   }
 
@@ -132,9 +127,22 @@ export default function DashboardPage() {
         <h1 className="text-xl font-semibold">
           Dashboard Administrasi
         </h1>
-        <Button variant="outline" onClick={handleLogout}>
-          Logout
-        </Button>
+        
+        <div className="flex gap-3">
+          {/* Tombol Invoke Cron */}
+          <Button
+            onClick={handleInvokeCron}
+            disabled={invoking}
+            className="gap-2"
+          >
+            <Zap className={`w-4 h-4 ${invoking ? 'animate-pulse' : ''}`} />
+            {invoking ? 'Memproses...' : 'Run Generation'}
+          </Button>
+
+          <Button variant="outline" onClick={handleLogout}>
+            Logout
+          </Button>
+        </div>
       </div>
 
       {/* Table */}
@@ -146,6 +154,7 @@ export default function DashboardPage() {
               <th className="px-4 py-3 text-left">Mapel</th>
               <th className="px-4 py-3 text-left">Kelas</th>
               <th className="px-4 py-3 text-left">Bab</th>
+              <th className="px-4 py-3 text-left">Status</th>
               <th className="px-4 py-3 text-center">Aksi</th>
             </tr>
           </thead>
@@ -153,7 +162,7 @@ export default function DashboardPage() {
             {masters.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-4 py-6 text-center text-slate-500"
                 >
                   Belum ada data
@@ -167,44 +176,31 @@ export default function DashboardPage() {
                 <td className="px-4 py-3">{row.mapel}</td>
                 <td className="px-4 py-3">{row.kelas}</td>
                 <td className="px-4 py-3">{row.jumlah_bab}</td>
+                <td className="px-4 py-3">
+                  <span
+                    className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                      row.generation_status === 'selesai'
+                        ? 'bg-green-100 text-green-700'
+                        : row.generation_status === 'sedang_jalan'
+                        ? 'bg-blue-100 text-blue-700'
+                        : row.generation_status === 'error'
+                        ? 'bg-red-100 text-red-700'
+                        : row.generation_status === 'belum_siap'
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {row.generation_status || 'belum_siap'}
+                  </span>
+                </td>
                 <td className="px-4 py-3 text-center">
-                  <div className="flex justify-center gap-2">
-                    {/* Sync Bab - HANYA BISA JIKA belum_siap */}
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      disabled={
-                        isSyncing(row.id) || 
-                        row.generation_status !== 'belum_siap'
-                      }
-                      onClick={() => handleSyncBab(row.id)}
-                      title={
-                        row.generation_status !== 'belum_siap'
-                          ? 'Sync hanya tersedia untuk status belum_siap'
-                          : 'Sync Bab (Generate Struktur)'
-                      }
-                    >
-                      <RefreshCcw
-                        className={`w-4 h-4 ${
-                          isSyncing(row.id) ? 'animate-spin' : ''
-                        }`}
-                      />
-                    </Button>
-
-                    {/* Navigate to Generate */}
-                    <Button
-                      size="icon"
-                      disabled={isSyncing(row.id)}
-                      onClick={() => navigate(`/generate/${row.id}`)}
-                      title={
-                        isSyncing(row.id)
-                          ? 'Sedang sinkronisasi bab'
-                          : 'Generate Administrasi'
-                      }
-                    >
-                      <Play className="w-4 h-4" />
-                    </Button>
-                  </div>
+                  <Button
+                    size="icon"
+                    onClick={() => navigate(`/generate/${row.id}`)}
+                    title="Lihat Detail Generate"
+                  >
+                    <Play className="w-4 h-4" />
+                  </Button>
                 </td>
               </tr>
             ))}
