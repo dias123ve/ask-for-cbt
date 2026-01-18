@@ -239,7 +239,9 @@ export default function GeneratePage() {
       const url = window.URL.createObjectURL(blob as Blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `administrasi_${masterId}.zip`
+      // ✨ Nama file ditentukan oleh edge function via Content-Disposition header
+      // Jadi kita tidak perlu set a.download di sini
+      // a.download = `administrasi_${masterId}.zip` // ← HAPUS INI
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(url)
