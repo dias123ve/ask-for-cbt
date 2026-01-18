@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
-import { Loader2, Play, Pause, Download } from 'lucide-react'
+import { Loader2, Play, Pause, Download, DownloadCloud } from 'lucide-react'
 import { callEdge } from '@/lib/callEdge'
 
 type GenerateStatus = 
@@ -43,6 +43,7 @@ export default function GeneratePage() {
   const [rows, setRows] = useState<GenerationRow[]>([])
   const [master, setMaster] = useState<MasterRow | null>(null)
   const [loading, setLoading] = useState(false)
+  const [downloadingAll, setDownloadingAll] = useState(false)
   
   // Prevent glitch during polling
   const isFetchingRef = useRef(false)
@@ -145,7 +146,7 @@ export default function GeneratePage() {
   /* ================================================== */
   /* BUTTON STATE LOGIC                                 */
   /* ================================================== */
- function getButtonState(): {
+  function getButtonState(): {
     disabled: boolean
     loading: boolean
     text: string
@@ -187,6 +188,14 @@ export default function GeneratePage() {
   }
 
   /* ================================================== */
+  /* DOWNLOAD ALL STATE                                 */
+  /* ================================================== */
+  function canDownloadAll(): boolean {
+    // Hanya enable jika master.generate_status === 'selesai'
+    return master?.generate_status === 'selesai'
+  }
+
+  /* ================================================== */
   /* GENERATE (TRIGGER ORCHESTRATOR)                    */
   /* ================================================== */
   async function handleGenerateAll() {
@@ -207,7 +216,45 @@ export default function GeneratePage() {
   }
 
   /* ================================================== */
-  /* DOWNLOAD HANDLER                                   */
+  /* DOWNLOAD ALL HANDLER                               */
+  /* ================================================== */
+  async function handleDownloadAll() {
+    if (!masterId) return
+    setDownloadingAll(true)
+
+    try {
+      // ✨ Panggil edge function pakai callEdge (sama seperti orchestrator)
+      const blob = await callEdge({
+        functionName: 'download_all_files',
+        body: { master_id: masterId },
+        expectBlob: true, // ✨ Flag untuk handle binary response
+      })
+
+      if (!blob) {
+        alert('Gagal mengunduh file')
+        return
+      }
+
+      // Trigger browser download
+      const url = window.URL.createObjectURL(blob as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `administrasi_${masterId}.zip`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+      
+    } catch (error) {
+      console.error('❌ Download all error:', error)
+      alert('Gagal mengunduh file')
+    } finally {
+      setDownloadingAll(false)
+    }
+  }
+
+  /* ================================================== */
+  /* DOWNLOAD HANDLER (SINGLE FILE)                     */
   /* ================================================== */
   async function handleDownload(row: GenerationRow) {
     if (!row.file_path) return
@@ -273,15 +320,32 @@ export default function GeneratePage() {
           Generate Administrasi
         </h1>
 
-        <Button
-          onClick={handleGenerateAll}
-          disabled={buttonState.disabled}
-        >
-          {(buttonState.loading || loading) && (
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-          )}
-          {loading ? 'Menunggu...' : buttonState.text}
-        </Button>
+        <div className="flex gap-2">
+          {/* Download All Button */}
+          <Button
+            onClick={handleDownloadAll}
+            disabled={!canDownloadAll() || downloadingAll}
+            variant="outline"
+          >
+            {downloadingAll ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <DownloadCloud className="w-4 h-4 mr-2" />
+            )}
+            {downloadingAll ? 'Mengunduh...' : 'Download Semua'}
+          </Button>
+
+          {/* Generate Button */}
+          <Button
+            onClick={handleGenerateAll}
+            disabled={buttonState.disabled}
+          >
+            {(buttonState.loading || loading) && (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            )}
+            {loading ? 'Menunggu...' : buttonState.text}
+          </Button>
+        </div>
       </div>
 
       {/* Status Info */}
