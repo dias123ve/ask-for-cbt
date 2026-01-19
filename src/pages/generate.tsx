@@ -218,42 +218,64 @@ export default function GeneratePage() {
   /* ================================================== */
   /* DOWNLOAD ALL HANDLER                               */
   /* ================================================== */
-  async function handleDownloadAll() {
-    if (!masterId) return
-    setDownloadingAll(true)
+ async function handleDownloadAll() {
+  if (!masterId) return
+  setDownloadingAll(true)
 
-    try {
-      // ✨ Panggil edge function pakai callEdge (sama seperti orchestrator)
-      const blob = await callEdge({
-        functionName: 'download_all_files',
-        body: { master_id: masterId },
-        expectBlob: true, // ✨ Flag untuk handle binary response
-      })
+  try {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-      if (!blob) {
-        alert('Gagal mengunduh file')
-        return
+    // ✅ Fetch langsung (bukan pakai callEdge) agar bisa akses headers
+    const response = await fetch(
+      `${supabaseUrl}/functions/v1/download_all_files`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anonKey}`,
+          'apikey': anonKey,
+        },
+        body: JSON.stringify({ master_id: masterId }),
       }
+    )
 
-      // Trigger browser download
-      const url = window.URL.createObjectURL(blob as Blob)
-      const a = document.createElement('a')
-      a.href = url
-      // ✨ Nama file ditentukan oleh edge function via Content-Disposition header
-      // Jadi kita tidak perlu set a.download di sini
-      // a.download = `administrasi_${masterId}.zip` // ← HAPUS INI
-      document.body.appendChild(a)
-      a.click()
-      window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
-      
-    } catch (error) {
-      console.error('❌ Download all error:', error)
+    if (!response.ok) {
       alert('Gagal mengunduh file')
-    } finally {
-      setDownloadingAll(false)
+      return
     }
+
+    // ✅ Ekstrak nama file dari Content-Disposition header
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let fileName = 'administrasi.zip' // default fallback
+    
+    if (contentDisposition) {
+      // Parse: attachment; filename="MapelName_Kelas 7_abc.zip"
+      const match = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (match && match[1]) {
+        fileName = match[1]
+      }
+    }
+
+    const blob = await response.blob()
+
+    // ✅ Trigger browser download dengan nama file yang benar
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName // ✅ Nama file dari server
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+    
+  } catch (error) {
+    console.error('❌ Download all error:', error)
+    alert('Gagal mengunduh file')
+  } finally {
+    setDownloadingAll(false)
   }
+}
 
   /* ================================================== */
   /* DOWNLOAD HANDLER (SINGLE FILE)                     */
